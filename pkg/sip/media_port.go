@@ -20,6 +20,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -326,7 +327,7 @@ func (p *MediaPort) rtpLoop(sess rtp.Session) {
 	for {
 		r, ssrc, err := sess.AcceptStream()
 		if err != nil {
-			if !errors.Is(err, net.ErrClosed) {
+			if !errors.Is(err, net.ErrClosed) && !strings.Contains(err.Error(), "closed") {
 				p.log.Errorw("cannot accept RTP stream", err)
 			}
 			return

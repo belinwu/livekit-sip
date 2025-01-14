@@ -35,6 +35,7 @@ import (
 	"github.com/livekit/protocol/tracer"
 	"github.com/livekit/psrpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
+	"github.com/livekit/sip/pkg/media/sdp"
 	"github.com/livekit/sipgo/sip"
 
 	"github.com/livekit/sip/pkg/config"
@@ -428,9 +429,22 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	runMedia := func(enc livekit.SIPMediaEncryption) ([]byte, error) {
 		answerData, err := c.runMediaConn(req.Body(), enc, conf, disp.EnabledFeatures)
 		if err != nil {
-			c.log.Errorw("Cannot start media", err)
+			isError := true
+			status, reason := callDropped, "media-failed"
+			if errors.Is(err, sdp.ErrNoCommonMedia) {
+				status, reason = callMediaFailed, "no-common-codec"
+				isError = false
+			} else if errors.Is(err, sdp.ErrNoCommonCrypto) {
+				status, reason = callMediaFailed, "no-common-crypto"
+				isError = false
+			}
+			if isError {
+				c.log.Errorw("Cannot start media", err)
+			} else {
+				c.log.Warnw("Cannot start media", err)
+			}
 			c.cc.RespondAndDrop(sip.StatusInternalServerError, "")
-			c.close(true, callDropped, "media-failed")
+			c.close(true, status, reason)
 			return nil, err
 		}
 		return answerData, nil
@@ -732,17 +746,19 @@ func (c *inboundCall) close(error bool, status CallStatus, reason string) {
 	}
 	c.setStatus(status)
 	c.mon.CallTerminate(reason)
+	sipCode, sipStatus := status.SIPStatus()
+	log := c.log.WithValues("status", sipCode, "reason", reason)
 	if error {
-		c.log.Warnw("Closing inbound call with error", nil, "reason", reason)
+		log.Warnw("Closing inbound call with error", nil)
 	} else {
-		c.log.Infow("Closing inbound call", "reason", reason)
+		log.Infow("Closing inbound call")
 	}
 	if status != callFlood {
-		defer c.log.Infow("Inbound call closed", "reason", reason)
+		defer log.Infow("Inbound call closed")
 	}
 
 	c.closeMedia()
-	c.cc.Close()
+	c.cc.CloseWithStatus(sipCode, sipStatus)
 	if c.callDur != nil {
 		c.callDur()
 	}
@@ -1238,17 +1254,20 @@ func (c *sipInbound) sendBye() {
 	sendAndACK(ctx, c, r)
 }
 
-func (c *sipInbound) sendRejected() {
+func (c *sipInbound) sendStatus(code sip.StatusCode, status string) {
 	if c.inviteOk != nil {
 		return // call already established
 	}
 	if c.inviteTx == nil {
 		return // rejected or closed
 	}
-	_, span := tracer.Start(context.Background(), "sipInbound.sendRejected")
+	_, span := tracer.Start(context.Background(), "sipInbound.sendStatus")
 	defer span.End()
 
-	r := sip.NewResponseFromRequest(c.invite, sip.StatusBusyHere, "Rejected", nil)
+	if status == "" {
+		status = sipStatus(code)
+	}
+	r := sip.NewResponseFromRequest(c.invite, code, status, nil)
 	if c.setHeaders != nil {
 		for k, v := range c.setHeaders(nil) {
 			r.AppendHeader(sip.NewHeader(k, v))
@@ -1360,12 +1379,17 @@ func (c *sipInbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) er
 
 // Close the inbound call cleanly. Depending on the call state it either sends BYE or terminates INVITE with busy status.
 func (c *sipInbound) Close() {
+	c.CloseWithStatus(sip.StatusBusyHere, "Rejected")
+}
+
+// CloseWithStatus the inbound call cleanly. Depending on the call state it either sends BYE or terminates INVITE with a specified status.
+func (c *sipInbound) CloseWithStatus(code sip.StatusCode, status string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.inviteOk != nil {
 		c.sendBye()
 	} else if c.inviteTx != nil {
-		c.sendRejected()
+		c.sendStatus(code, status)
 	} else {
 		c.drop()
 	}

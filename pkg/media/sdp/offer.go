@@ -33,6 +33,11 @@ import (
 	"github.com/livekit/sip/pkg/media/srtp"
 )
 
+var (
+	ErrNoCommonMedia  = errors.New("common audio codec not found")
+	ErrNoCommonCrypto = errors.New("no common encryption profiles")
+)
+
 type Encryption int
 
 const (
@@ -265,9 +270,9 @@ func (d *Offer) Answer(publicIp netip.Addr, rtpListenerPort int, enc Encryption)
 		if err != nil {
 			return nil, nil, err
 		}
-		if sprof == nil && enc == EncryptionRequire {
-			return nil, nil, errors.New("no common encryption profiles")
-		}
+	}
+	if sprof == nil && enc == EncryptionRequire {
+		return nil, nil, ErrNoCommonCrypto
 	}
 
 	mediaDesc := AnswerMedia(rtpListenerPort, audio, sprof)
@@ -326,9 +331,9 @@ func (d *Answer) Apply(offer *Offer, enc Encryption) (*MediaConfig, error) {
 		if err != nil {
 			return nil, err
 		}
-		if sconf == nil && enc == EncryptionRequire {
-			return nil, errors.New("no common encryption profiles")
-		}
+	}
+	if sconf == nil && enc == EncryptionRequire {
+		return nil, ErrNoCommonCrypto
 	}
 	return &MediaConfig{
 		Local:  offer.Addr,
@@ -486,7 +491,7 @@ func SelectAudio(desc MediaDesc) (*AudioConfig, error) {
 		}
 	}
 	if audioCodec == nil {
-		return nil, fmt.Errorf("common audio codec not found")
+		return nil, ErrNoCommonMedia
 	}
 	return &AudioConfig{
 		Codec:    audioCodec,

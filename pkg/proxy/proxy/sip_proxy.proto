@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package proxy;
+
+option go_package = "github.com/livekit/sip/pkg/proxy";
+
+enum SIPTransport {
+  SIP_TRANSPORT_UNKNOWN = 0;
+  SIP_TRANSPORT_UDP = 1;
+  SIP_TRANSPORT_TCP = 2;
+  SIP_TRANSPORT_TLS = 3;
+}
+
+message SIPInternalHeader {
+  string source_ip   = 1;
+  uint32 source_port = 2;
+  SIPTransport transport = 3;
+}
